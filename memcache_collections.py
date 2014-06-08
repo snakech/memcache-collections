@@ -46,11 +46,6 @@ class SetError(Error):
   if evicitons are disabled)."""
   pass
 
-class AddError(Error):
-  """Memcache add operation failed-- indicates server unavailable (or full,
-  if evicitons are disabled), or a race creating an entry."""
-  pass
-
 
 class _Node(object):
 
@@ -84,10 +79,6 @@ class _DequeClient:
     # schema is language independent.
     if not self.mc.set(node.uuid, dumps(node)):
       raise SetError
-
-  def AddNode(self, node):
-    if not self.mc.add(node.uuid, dumps(node)):
-      raise AddError
 
   def DeleteNode(self, node):
     self.mc.delete(node.uuid)
@@ -141,6 +132,7 @@ class deque(object):
 
   Synopsis:
 
+    >>> import memcache
     >>> from memcache_collections import deque
     >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
     >>> d = deque.create(mc, 'my_deque')
@@ -241,19 +233,14 @@ class deque(object):
 
   @classmethod
   def create(cls, memcache_client, name=None):
-    """Create a new collection in memcache.
-
-    If optional name is given, it will be used verbatim as the key for the
-    root entry of the collection.
-
-    Raises AddError if the named collection already exists.
-    """
+    """Create a new collection in memcache, optionally with given unique
+    name."""
     client = _DequeClient(memcache_client)
     # TODO: create _Anchor class derived from _Node w/util methods
     # TODO: track deque length
     anchor = _Node(name)
     anchor.value = _Status.STABLE
-    client.AddNode(anchor)
+    client.SaveNode(anchor)
     return cls(client, anchor.uuid)
 
   @classmethod
@@ -601,6 +588,7 @@ def mcas(mc, entries):
   """Multi-entry compare-and-set.
 
   Synopsis:
+    >>> import memcache
     >>> from memcache_collections import mcas
     >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
     >>> # initialize a doubly-linked list with two elements
@@ -609,14 +597,14 @@ def mcas(mc, entries):
     ...     'bar': {'prev': 'foo'}})
     []
     >>> # Always use mcas_get to access entries potentially in MCAS
-    >>> # operations.  It returns an object representing a memcache entry
+    >>> # operations.  It returs an object representing a memcache entry
     >>> # snapshot.
     >>> foo_entry, bar_entry = mcas_get(mc, 'foo'), mcas_get(mc, 'bar')
     >>> foo_entry.key, foo_entry.value
     ('foo', {'next': 'bar'})
     >>> # atomically insert new node in our doubly linked list via MCAS
-    >>> mc.add('baz', {'prev': 'foo', 'next': 'bar'})
-    1
+    >>> mc.set('baz', {'prev': 'foo', 'next': 'bar'})
+    True
     >>> mcas(mc, [
     ...     (foo_entry, {'next': 'baz'}),
     ...     (bar_entry, {'prev': 'baz'})])
@@ -638,7 +626,7 @@ def mcas(mc, entries):
   """
   dc = _DequeClient(mc)
   mcas_record = _McasRecord(mc, entries)
-  dc.AddNode(mcas_record)
+  dc.SaveNode(mcas_record)
   # very sad that we need to read this back just to get CAS ID
   dc.mc.gets(mcas_record.uuid)
   return _mcas_help(dc, mcas_record, is_originator=True)
@@ -673,13 +661,3 @@ def mcas_get(mc, key):
       _mcas_help(dc, mcas_record)
     else:
       return Entry(key, value, cas_id)
-
-
-def test():
-  import doctest
-  import mockcache
-  doctest.testmod(extraglobs={'memcache': mockcache})
-
-
-if __name__ == '__main__':
-  test()
